@@ -26,10 +26,10 @@ def batch(split, bs, g):
 # fixed held-out set for prediction distances: 16 windows x 256 = 4096 val tokens
 XE, YE = batch('val', 16, torch.Generator().manual_seed(123))
 
-# ---- nanoGPT-style model with plain attention (fused attention has no double backward, needed later for sharpness)
+# ---- nanoGPT-style model (no biases, as nanoGPT) with plain attention (fused attention has no double backward, needed later for sharpness)
 class Attn(nn.Module):
     def __init__(s, d, h):
-        super().__init__(); s.h = h; s.qkv = nn.Linear(d, 3*d); s.proj = nn.Linear(d, d)
+        super().__init__(); s.h = h; s.qkv = nn.Linear(d, 3*d, bias=False); s.proj = nn.Linear(d, d, bias=False)
     def forward(s, x):
         B, Tn, D = x.shape; q, k, v = s.qkv(x).split(D, -1)
         q, k, v = [t.view(B, Tn, s.h, D // s.h).transpose(1, 2) for t in (q, k, v)]
@@ -38,20 +38,19 @@ class Attn(nn.Module):
         return s.proj((a @ v).transpose(1, 2).reshape(B, Tn, D))
 class Block(nn.Module):
     def __init__(s, d, h):
-        super().__init__(); s.ln1 = nn.LayerNorm(d); s.att = Attn(d, h)
-        s.ln2 = nn.LayerNorm(d); s.mlp = nn.Sequential(nn.Linear(d, 4*d), nn.GELU(), nn.Linear(4*d, d))
+        super().__init__(); s.ln1 = nn.LayerNorm(d, bias=False); s.att = Attn(d, h)
+        s.ln2 = nn.LayerNorm(d, bias=False); s.mlp = nn.Sequential(nn.Linear(d, 4*d, bias=False), nn.GELU(), nn.Linear(4*d, d, bias=False))
     def forward(s, x):
         x = x + s.att(s.ln1(x))
         return x + s.mlp(s.ln2(x))
 class GPT(nn.Module):
     def __init__(s, d=N_EMBD, h=N_HEAD, L=N_LAYER):
         super().__init__(); s.tok = nn.Embedding(V, d); s.pos = nn.Embedding(CTX, d)
-        s.blocks = nn.ModuleList([Block(d, h) for _ in range(L)]); s.ln = nn.LayerNorm(d); s.head = nn.Linear(d, V, bias=False)
-        # nanoGPT init: weights N(0, 0.02), biases 0, and the 2L layers that add into the residual stream
+        s.blocks = nn.ModuleList([Block(d, h) for _ in range(L)]); s.ln = nn.LayerNorm(d, bias=False); s.head = nn.Linear(d, V, bias=False)
+        # nanoGPT init: weights N(0, 0.02), and the 2L layers that add into the residual stream
         # scaled by 1/sqrt(2L) so the stream does not grow with depth
         for m in s.modules():
             if isinstance(m, (nn.Linear, nn.Embedding)): nn.init.normal_(m.weight, std=0.02)
-            if isinstance(m, nn.Linear) and m.bias is not None: nn.init.zeros_(m.bias)
         for n, p in s.named_parameters():
             if n.endswith('att.proj.weight') or n.endswith('mlp.2.weight'): nn.init.normal_(p, std=0.02 / math.sqrt(2 * L))
     def forward(s, x):
