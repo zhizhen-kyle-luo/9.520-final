@@ -47,6 +47,13 @@ class GPT(nn.Module):
     def __init__(s, d=N_EMBD, h=N_HEAD, L=N_LAYER):
         super().__init__(); s.tok = nn.Embedding(V, d); s.pos = nn.Embedding(CTX, d)
         s.blocks = nn.ModuleList([Block(d, h) for _ in range(L)]); s.ln = nn.LayerNorm(d); s.head = nn.Linear(d, V, bias=False)
+        # nanoGPT init: weights N(0, 0.02), biases 0, and the 2L layers that add into the residual stream
+        # scaled by 1/sqrt(2L) so the stream does not grow with depth
+        for m in s.modules():
+            if isinstance(m, (nn.Linear, nn.Embedding)): nn.init.normal_(m.weight, std=0.02)
+            if isinstance(m, nn.Linear) and m.bias is not None: nn.init.zeros_(m.bias)
+        for n, p in s.named_parameters():
+            if n.endswith('att.proj.weight') or n.endswith('mlp.2.weight'): nn.init.normal_(p, std=0.02 / math.sqrt(2 * L))
     def forward(s, x):
         h = s.tok(x) + s.pos(torch.arange(x.size(1), device=x.device))
         for b in s.blocks: h = b(h)
@@ -80,9 +87,10 @@ def make_opt(name, model, lr, adam_lr=None):
     hidden = [p for n, p in model.named_parameters() if is_hidden(n, p)]
     rest = [p for n, p in model.named_parameters() if not is_hidden(n, p)]
     if name == 'sgd': return [torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)]
-    if name == 'adam': return [torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.0)]
+    # beta2 0.99 as in nanoGPT shakespeare_char, since few tokens per step make the squared-gradient estimate noisy
+    if name == 'adam': return [torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.99), weight_decay=0.0)]
     # plan: non-hidden params on AdamW at Adam's LR, so Adam and Muon differ only on the hidden matrices
-    if name == 'muon': return [Muon(hidden, lr), torch.optim.AdamW(rest, lr=adam_lr, weight_decay=0.0)]
+    if name == 'muon': return [Muon(hidden, lr), torch.optim.AdamW(rest, lr=adam_lr, betas=(0.9, 0.99), weight_decay=0.0)]
 
 @torch.no_grad()
 def evaluate(model):
