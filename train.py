@@ -8,7 +8,7 @@ CTX, BS, N_LAYER, N_HEAD, N_EMBD = 256, 64, 6, 6, 384
 SWEEP_STEPS, FULL_STEPS, EVERY, EVAL_ITERS = 1000, 5000, 100, 20
 # loss drops fastest early, so full runs checkpoint every 10 steps until step 500 to resolve when optimizers split
 EVERY_EARLY, EARLY_UNTIL = 10, 500
-SWEEP = {'sgd': [0.03, 0.1, 0.3, 1.0, 3.0], 'adam': [1e-4, 3e-4, 1e-3, 3e-3, 1e-2], 'muon': [0.003, 0.01, 0.03, 0.1, 0.3]}
+SWEEP = {'sgd': [0.001, 0.003, 0.01, 0.03, 0.1], 'adam': [1e-4, 3e-4, 1e-3, 3e-3, 1e-2], 'muon': [0.003, 0.01, 0.03, 0.1, 0.3]}
 SEEDS = [0, 1]
 
 # ---- data: same download and 90/10 split as nanoGPT data/shakespeare_char/prepare.py
