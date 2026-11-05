@@ -20,9 +20,10 @@ def matched_idx(log, target):
     # first checkpoint whose train loss reaches the target (plan, matched loss)
     return next(i for i, l in enumerate(log['train']) if l <= target)
 
-# targets span the loss range every run reaches
+# targets span the loss range every run reaches, starting at the lowest step-10 loss: above it some run
+# has no saved checkpoint between initialization and step 10, so its matched checkpoint would be ahead of the target
 lo = max(min(log['train']) for log, _ in runs.values())
-hi = min(log['train'][0] for log, _ in runs.values())
+hi = min(log['train'][1] for log, _ in runs.values())
 targets = np.linspace(hi, lo, 25)
 
 def dist_curve(pairs, f):
@@ -51,15 +52,18 @@ for k, (f, name) in enumerate([(js, 'JS divergence (nats)'), (top1, 'top guess d
         pairs = [((o1, s1), (o2, s2)) for s1 in SEEDS for s2 in SEEDS]
         a.plot(targets, dist_curve(pairs, f), lw=1.2, label=f'{NAME[o1]} vs {NAME[o2]}')
     a.set(xlabel='matched train loss (nats)', title=f'({"bc"[k]}) {name}'); a.invert_xaxis()
-    if k == 0: a.legend()
+    if k == 0: a.legend(loc='upper left')
 plt.tight_layout(pad=0.3); plt.savefig(f'{OUT}/checkpoint_figure.pdf'); plt.savefig(f'{OUT}/checkpoint_figure.png', dpi=300)
 
 # numbers for the write-up
 print('best lr', json.load(open(f'{OUT}/best_lr.json')))
 for (o, s), (log, _) in runs.items():
     print(f'{o} s{s} final train {log["train"][-1]:.3f} min val {min(log["val"]):.3f} at step {log["step"][int(np.argmin(log["val"]))]}')
-for t in targets[::4]:
-    i = {r: matched_idx(runs[r][0], t) for r in runs}
-    row = ' '.join(f'{o1[0]}{o2[0]}={js(runs[(o1,0)][1][i[(o1,0)]], runs[(o2,0)][1][i[(o2,0)]]):.4f}' for o1, o2 in itertools.combinations(OPTS, 2))
-    seeds = ' '.join(f'{o[0]}{o[0]}={js(runs[(o,0)][1][i[(o,0)]], runs[(o,1)][1][i[(o,1)]]):.4f}' for o in OPTS)
-    print(f'loss {t:.2f}  between(s0) {row}  within {seeds}')
+# the plotted values: pair means over 4 seed pairings, and the seed band
+for f in [js, top1]:
+    band = np.stack([dist_curve([((o, 0), (o, 1))], f) for o in OPTS])
+    pair = {f'{o1[0]}{o2[0]}': dist_curve([((o1, s1), (o2, s2)) for s1 in SEEDS for s2 in SEEDS], f)
+            for o1, o2 in itertools.combinations(OPTS, 2)}
+    print(f.__name__)
+    for j, t in enumerate(targets):
+        print(f'  loss {t:.2f}  band {band[:, j].min():.4f}-{band[:, j].max():.4f}  ' + ' '.join(f'{k}={v[j]:.4f}' for k, v in pair.items()))
