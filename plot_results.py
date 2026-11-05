@@ -38,7 +38,7 @@ fig, ax = plt.subplots(1, 3, figsize=(13, 3.6))
 for (o, s), (log, _) in runs.items():
     ax[0].plot(log['step'], log['train'], color=COLOR[o], ls='-' if s == 0 else ':', lw=1, label=f'{o} train' if s == 0 else None)
     ax[0].plot(log['step'], log['val'], color=COLOR[o], ls='--', lw=1, alpha=0.6, label=f'{o} val' if s == 0 else None)
-ax[0].set(xlabel='step', ylabel='loss (nats)', title='(a) loss', ylim=(0.8, 3.5)); ax[0].legend(fontsize=7, ncol=2)
+ax[0].set(xlabel='step', ylabel='loss (nats)', title='(a) loss', ylim=(0, 4.3)); ax[0].legend(fontsize=7, ncol=2)
 # (b) pairwise distance vs matched train loss, seed band = within-optimizer seed 0 vs seed 1
 for k, (f, name) in enumerate([(js, 'JS divergence (nats)'), (top1, 'top-1 disagreement')]):
     a = ax[k + 1]
@@ -47,7 +47,7 @@ for k, (f, name) in enumerate([(js, 'JS divergence (nats)'), (top1, 'top-1 disag
     for o1, o2 in itertools.combinations(OPTS, 2):
         pairs = [((o1, s1), (o2, s2)) for s1 in SEEDS for s2 in SEEDS]
         a.plot(targets, dist_curve(pairs, f), label=f'{o1} vs {o2}')
-    a.set(xlabel='matched train loss (nats)', ylabel=name, title=f'(b) {name}'); a.invert_xaxis(); a.legend(fontsize=7)
+    a.set(xlabel='matched train loss (nats)', ylabel=name, title=f'({"bc"[k]}) {name}'); a.invert_xaxis(); a.legend(fontsize=7)
 plt.tight_layout(); plt.savefig(f'{OUT}/checkpoint_figure.pdf'); plt.savefig(f'{OUT}/checkpoint_figure.png', dpi=150)
 
 # numbers for the write-up
