@@ -4,7 +4,9 @@ matplotlib.use('Agg'); import matplotlib.pyplot as plt
 OUT = sys.argv[1] if len(sys.argv) > 1 else 'runs'
 OPTS, SEEDS = ['sgd', 'adam', 'muon'], [0, 1]
 COLOR = {'sgd': 'tab:blue', 'adam': 'tab:orange', 'muon': 'tab:green'}
-runs = {(o, s): (json.load(open(f'{OUT}/{o}_seed{s}.json')), torch.load(f'{OUT}/{o}_seed{s}_logprobs.pt', weights_only=True).float())
+BEST = json.load(open(f'{OUT}/best_lr.json'))
+runs = {(o, s): (json.load(open(f'{OUT}/{o}_lr{BEST[o]}_seed{s}.json')),
+                 torch.load(f'{OUT}/{o}_lr{BEST[o]}_seed{s}_logprobs.pt', weights_only=True).float())
         for o in OPTS for s in SEEDS}
 
 def js(a, b):
