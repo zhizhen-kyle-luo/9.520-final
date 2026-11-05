@@ -52,7 +52,7 @@ for k, (f, name) in enumerate([(js, 'JS divergence (nats)'), (top1, 'top guess d
         pairs = [((o1, s1), (o2, s2)) for s1 in SEEDS for s2 in SEEDS]
         a.plot(targets, dist_curve(pairs, f), lw=1.2, label=f'{NAME[o1]} vs {NAME[o2]}')
     a.set(xlabel='matched train loss (nats)', title=f'({"bc"[k]}) {name}'); a.invert_xaxis()
-    if k == 0: a.legend(loc='upper left')
+    if k == 1: a.legend(loc='lower right')
 plt.tight_layout(pad=0.3); plt.savefig(f'{OUT}/checkpoint_figure.pdf'); plt.savefig(f'{OUT}/checkpoint_figure.png', dpi=300)
 
 # numbers for the write-up
