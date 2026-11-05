@@ -33,22 +33,26 @@ def dist_curve(pairs, f):
                             for a, b in pairs]))
     return np.array(out)
 
-fig, ax = plt.subplots(1, 3, figsize=(13, 3.6))
-# (a) train and val loss vs step
+# drawn at printed size (full page width, 7 in) so text is not shrunk in the pdf
+plt.rcParams.update({'font.size': 9, 'axes.titlesize': 9, 'legend.fontsize': 8})
+NAME = {'sgd': 'SGD', 'adam': 'Adam', 'muon': 'Muon'}
+fig, ax = plt.subplots(1, 3, figsize=(7.2, 2.5))
+# (a) train (solid) and val (dashed) loss vs step, both seeds
 for (o, s), (log, _) in runs.items():
-    ax[0].plot(log['step'], log['train'], color=COLOR[o], ls='-' if s == 0 else ':', lw=1, label=f'{o} train' if s == 0 else None)
-    ax[0].plot(log['step'], log['val'], color=COLOR[o], ls='--', lw=1, alpha=0.6, label=f'{o} val' if s == 0 else None)
-ax[0].set(xlabel='step', ylabel='loss (nats)', title='(a) loss', ylim=(0, 4.3)); ax[0].legend(fontsize=7, ncol=2)
-# (b) pairwise distance vs matched train loss, seed band = within-optimizer seed 0 vs seed 1
-for k, (f, name) in enumerate([(js, 'JS divergence (nats)'), (top1, 'top-1 disagreement')]):
+    ax[0].plot(log['step'], log['train'], color=COLOR[o], lw=1, label=NAME[o] if s == 0 else None)
+    ax[0].plot(log['step'], log['val'], color=COLOR[o], ls='--', lw=1, alpha=0.6)
+ax[0].set(xlabel='step', ylabel='loss (nats)', title='(a) loss', ylim=(0, 4.3)); ax[0].legend()
+# (b, c) pairwise distance vs matched train loss, seed band = within-optimizer seed 0 vs seed 1
+for k, (f, name) in enumerate([(js, 'JS divergence (nats)'), (top1, 'top guess disagreement')]):
     a = ax[k + 1]
     within = np.stack([dist_curve([((o, 0), (o, 1))], f) for o in OPTS])
-    a.fill_between(targets, within.min(0), within.max(0), color='gray', alpha=0.3, label='same optimizer, other seed')
+    a.fill_between(targets, within.min(0), within.max(0), color='gray', alpha=0.3, label='seed band')
     for o1, o2 in itertools.combinations(OPTS, 2):
         pairs = [((o1, s1), (o2, s2)) for s1 in SEEDS for s2 in SEEDS]
-        a.plot(targets, dist_curve(pairs, f), label=f'{o1} vs {o2}')
-    a.set(xlabel='matched train loss (nats)', ylabel=name, title=f'({"bc"[k]}) {name}'); a.invert_xaxis(); a.legend(fontsize=7)
-plt.tight_layout(); plt.savefig(f'{OUT}/checkpoint_figure.pdf'); plt.savefig(f'{OUT}/checkpoint_figure.png', dpi=150)
+        a.plot(targets, dist_curve(pairs, f), lw=1.2, label=f'{NAME[o1]} vs {NAME[o2]}')
+    a.set(xlabel='matched train loss (nats)', title=f'({"bc"[k]}) {name}'); a.invert_xaxis()
+    if k == 0: a.legend()
+plt.tight_layout(pad=0.3); plt.savefig(f'{OUT}/checkpoint_figure.pdf'); plt.savefig(f'{OUT}/checkpoint_figure.png', dpi=300)
 
 # numbers for the write-up
 print('best lr', json.load(open(f'{OUT}/best_lr.json')))
