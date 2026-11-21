@@ -5,11 +5,14 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is
 torch.backends.cuda.matmul.allow_tf32 = True
 OUT = sys.argv[1] if len(sys.argv) > 1 else 'runs'
 CTX, BS, N_LAYER, N_HEAD, N_EMBD = 256, 64, 6, 6, 384
-SWEEP_STEPS, FULL_STEPS, EVERY, EVAL_ITERS = 1000, 5000, 100, 20
-# loss drops fastest early, so full runs checkpoint every 10 steps until step 500 to resolve when optimizers split
-EVERY_EARLY, EARLY_UNTIL = 10, 500
+SWEEP_STEPS, FULL_STEPS, EVERY, EVAL_ITERS, CHECK_ITERS = 1000, 5000, 100, 20, 8
 SWEEP = {'sgd': [0.001, 0.003, 0.01, 0.03, 0.1], 'adam': [1e-4, 3e-4, 1e-3, 3e-3, 1e-2], 'muon': [0.003, 0.01, 0.03, 0.1, 0.3]}
-SEEDS = [0, 1]
+SEEDS, SEEDS_LR2 = range(10), range(4)   # 10 seeds at the picked rate, 4 at the second best rate (lr control)
+# predictions are saved when training loss first crosses each target on this grid, so runs are compared at nearly
+# the same loss; fixed step checkpoints overshot targets by up to 0.12 nats, which alone moves predictions as much
+# as the optimizer effect being measured. the loss is checked often where it falls fast
+LOSS_GRID = [round(4.1 - 0.02 * i, 2) for i in range(141)]   # 4.10 down to 1.30
+def check_every(it): return 1 if it < 300 else 5 if it < 1500 else 20
 
 # ---- data: same download and 90/10 split as nanoGPT data/shakespeare_char/prepare.py
 URL = 'https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt'
@@ -92,38 +95,50 @@ def make_opt(name, model, lr, adam_lr=None):
     if name == 'muon': return [Muon(hidden, lr), torch.optim.AdamW(rest, lr=adam_lr, betas=(0.9, 0.99), weight_decay=0.0)]
 
 @torch.no_grad()
-def evaluate(model):
-    # same eval batches at every checkpoint so loss curves are not noisy across checkpoints or runs
-    model.eval(); res = {}
-    for split in ['train', 'val']:
-        g = torch.Generator().manual_seed(7)
-        res[split] = sum(F.cross_entropy(model(x).view(-1, V), y.view(-1)).item()
-                         for x, y in (batch(split, BS, g) for _ in range(EVAL_ITERS))) / EVAL_ITERS
-    logp = F.log_softmax(model(XE), -1).half().cpu()
-    model.train()
-    return res['train'], res['val'], logp
+def eval_loss(model, split, iters):
+    # same batches at every call so loss values are comparable across checkpoints and runs
+    g = torch.Generator().manual_seed(7)
+    return sum(F.cross_entropy(model(x).view(-1, V), y.view(-1)).item()
+               for x, y in (batch(split, BS, g) for _ in range(iters))) / iters
+
+@torch.no_grad()
+def weight_norms(model):
+    # norm check (plan, plot d): largest entry and largest singular value of each hidden matrix
+    W = [p for n, p in model.named_parameters() if p.ndim == 2 and n.startswith('blocks.')]
+    return [w.abs().max().item() for w in W], [torch.linalg.matrix_norm(w.float(), ord=2).item() for w in W]
 
 def run(name, lr, seed, steps, adam_lr=None, save_logp=True):
-    """train one run and return its loss curve plus held-out log-probs at every checkpoint
+    """train one run and return its loss curve, plus held-out log-probs saved where training loss first crosses
+    each LOSS_GRID target
     seed k fixes both init and data order, so seed k of every optimizer shares them (plan, seed control)
+    grid_save[j] is the index of the save used for grid target j, or -1 if the run never reached it
     a run whose loss goes non-finite stops early and is marked diverged"""
     torch.manual_seed(seed); model = GPT().to(DEVICE); opts = make_opt(name, model, lr, adam_lr)
     g = torch.Generator().manual_seed(1000 + seed)
-    log = dict(name=name, lr=lr, seed=seed, adam_lr=adam_lr, step=[], train=[], val=[], diverged=False); logps = []
+    log = dict(name=name, lr=lr, seed=seed, adam_lr=adam_lr, step=[], train=[], val=[], diverged=False,
+               save_step=[], save_train=[], save_val=[], save_linf=[], save_spec=[], grid_save=[-1] * len(LOSS_GRID))
+    logps, j = [], 0   # j is the next grid target not yet crossed
     t0 = time.time()
     for it in range(steps + 1):
-        every = EVERY_EARLY if save_logp and it < EARLY_UNTIL else EVERY
-        if it % every == 0 or it == steps:
-            tl, vl, lp = evaluate(model)
+        if it % EVERY == 0 or it == steps:
+            model.eval(); tl, vl = eval_loss(model, 'train', EVAL_ITERS), eval_loss(model, 'val', EVAL_ITERS); model.train()
             log['step'].append(it); log['train'].append(tl); log['val'].append(vl)
-            if save_logp: logps.append(lp)
             if not math.isfinite(tl): log['diverged'] = True; break
+        if save_logp and j < len(LOSS_GRID) and it % check_every(it) == 0:
+            model.eval(); tl = eval_loss(model, 'train', CHECK_ITERS)
+            if tl <= LOSS_GRID[j]:
+                with torch.no_grad(): logps.append(F.log_softmax(model(XE), -1).half().cpu())
+                linf, spec = weight_norms(model)
+                log['save_step'].append(it); log['save_train'].append(tl); log['save_val'].append(eval_loss(model, 'val', CHECK_ITERS))
+                log['save_linf'].append(linf); log['save_spec'].append(spec)
+                while j < len(LOSS_GRID) and tl <= LOSS_GRID[j]: log['grid_save'][j] = len(logps) - 1; j += 1
+            model.train()
         if it == steps: break
         x, y = batch('train', BS, g)
         for o in opts: o.zero_grad()
         F.cross_entropy(model(x).view(-1, V), y.view(-1)).backward()
         for o in opts: o.step()
-    print(f'{name} lr={lr} seed={seed} train {log["train"][-1]:.3f} val {log["val"][-1]:.3f} '
+    print(f'{name} lr={lr} seed={seed} train {log["train"][-1]:.3f} val {log["val"][-1]:.3f} saves {len(logps)} '
           f'{"DIVERGED " if log["diverged"] else ""}time {time.time()-t0:.0f}s', flush=True)
     return log, (torch.stack(logps) if save_logp else None)
 
@@ -135,7 +150,7 @@ def cached_run(path, *args, **kw):
     json.dump(log, open(path + '.json', 'w'))
     return log
 
-def best_lr(name, adam_lr=None):
+def ranked_lrs(name, adam_lr=None):
     # pick by training loss, as kunstner et al. 2023 do when the question is optimizer behavior rather
     # than generalization; mean of the last 3 checkpoints so one loss spike at step 1000 cannot flip the pick
     res = []
@@ -143,15 +158,19 @@ def best_lr(name, adam_lr=None):
         log = cached_run(f'{OUT}/sweep_{name}_lr{lr}', name, lr, 0, SWEEP_STEPS, adam_lr=adam_lr, save_logp=False)
         res.append((sum(log['train'][-3:]) / 3 if not log['diverged'] else float('inf'), lr))
     print('sweep', name, res, flush=True)
-    return min(res)[1]
+    return [lr for _, lr in sorted(res)]
 
 if __name__ == '__main__':
     os.makedirs(OUT, exist_ok=True)
     print('device', DEVICE, 'vocab', V, 'params', sum(p.numel() for p in GPT().parameters()), flush=True)
-    best = {'sgd': best_lr('sgd'), 'adam': best_lr('adam')}
-    best['muon'] = best_lr('muon', adam_lr=best['adam'])   # muon's AdamW part needs adam's LR first
-    json.dump(best, open(f'{OUT}/best_lr.json', 'w'))
-    for name in ['sgd', 'adam', 'muon']:
-        for seed in SEEDS:
-            cached_run(f'{OUT}/{name}_lr{best[name]}_seed{seed}', name, best[name], seed, FULL_STEPS,
-                       adam_lr=best['adam'] if name == 'muon' else None)
+    ranked = {'sgd': ranked_lrs('sgd'), 'adam': ranked_lrs('adam')}
+    ranked['muon'] = ranked_lrs('muon', adam_lr=ranked['adam'][0])   # muon's AdamW part needs adam's LR first
+    lrs = {name: {'best': r[0], 'second': r[1]} for name, r in ranked.items()}
+    json.dump(lrs, open(f'{OUT}/lrs.json', 'w'))
+    # seeds outermost so a partial run still gives every optimizer the same seeds
+    for which, seeds in [('best', SEEDS), ('second', SEEDS_LR2)]:
+        for seed in seeds:
+            for name in ['sgd', 'adam', 'muon']:
+                lr = lrs[name][which]
+                cached_run(f'{OUT}/{name}_lr{lr}_seed{seed}', name, lr, seed, FULL_STEPS,
+                           adam_lr=lrs['adam']['best'] if name == 'muon' else None)
