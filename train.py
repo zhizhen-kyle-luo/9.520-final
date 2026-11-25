@@ -8,7 +8,7 @@ CTX, BS, N_LAYER, N_HEAD, N_EMBD = 256, 64, 6, 6, 384
 SWEEP_STEPS, FULL_STEPS, EVERY, EVAL_ITERS = 1000, 5000, 100, 20
 # loss drops fastest early, so full runs checkpoint every 10 steps until step 500 to resolve when optimizers split
 EVERY_EARLY, EARLY_UNTIL = 10, 500
-SWEEP = {'sgd': [0.03, 0.1, 0.3, 1.0, 3.0], 'adam': [1e-4, 3e-4, 1e-3, 3e-3, 1e-2], 'muon': [0.003, 0.01, 0.03, 0.1, 0.3]}
+SWEEP = {'sgd': [0.001, 0.003, 0.01, 0.03, 0.1], 'adam': [1e-4, 3e-4, 1e-3, 3e-3, 1e-2], 'muon': [0.003, 0.01, 0.03, 0.1, 0.3]}
 SEEDS = [0, 1]
 
 # ---- data: same download and 90/10 split as nanoGPT data/shakespeare_char/prepare.py
@@ -136,11 +136,12 @@ def cached_run(path, *args, **kw):
     return log
 
 def best_lr(name, adam_lr=None):
-    # plan: pick by final loss of 1,000-step runs, here final val loss
+    # pick by training loss, as kunstner et al. 2023 do when the question is optimizer behavior rather
+    # than generalization; mean of the last 3 checkpoints so one loss spike at step 1000 cannot flip the pick
     res = []
     for lr in SWEEP[name]:
         log = cached_run(f'{OUT}/sweep_{name}_lr{lr}', name, lr, 0, SWEEP_STEPS, adam_lr=adam_lr, save_logp=False)
-        res.append((log['val'][-1] if not log['diverged'] else float('inf'), lr))
+        res.append((sum(log['train'][-3:]) / 3 if not log['diverged'] else float('inf'), lr))
     print('sweep', name, res, flush=True)
     return min(res)[1]
 
@@ -152,5 +153,5 @@ if __name__ == '__main__':
     json.dump(best, open(f'{OUT}/best_lr.json', 'w'))
     for name in ['sgd', 'adam', 'muon']:
         for seed in SEEDS:
-            cached_run(f'{OUT}/{name}_seed{seed}', name, best[name], seed, FULL_STEPS,
+            cached_run(f'{OUT}/{name}_lr{best[name]}_seed{seed}', name, best[name], seed, FULL_STEPS,
                        adam_lr=best['adam'] if name == 'muon' else None)
